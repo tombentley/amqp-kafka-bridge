@@ -68,7 +68,6 @@ public class BitListTest {
 		System.out.println(bl);
 		assertEquals(7, bl.lowestSetBits());
 	}
-
 	
 	@Test
 	public void multiWordShift() {
@@ -85,12 +84,28 @@ public class BitListTest {
 		
 		bl.set(1);
 		assertEquals(70, bl.lowestSetBits());
-		BitList bl2 = bl.clone();
 
 		assertEquals(70, bl.rshift(70));
 		assertEquals(0, bl.lowestSetBits());
+	}
+	
+	@Test
+	public void multiWordShift2() {
+		// test shifts > 64
+		BitList bl = new BitList(0);
+		bl.set(0);
+		assertEquals(1, bl.lowestSetBits());
+		assertEquals(0, bl.offset());
 		
-		assertEquals(69, bl2.rshift(69));
-		assertEquals(1, bl2.lowestSetBits());
-	}	
+		for (int i = 2; i < 70; i++) {
+			bl.set(i);
+			assertEquals(1, bl.lowestSetBits());
+		}
+		
+		bl.set(1);
+		assertEquals(70, bl.lowestSetBits());
+
+		assertEquals(69, bl.rshift(69));
+		assertEquals(1, bl.lowestSetBits());
+	}
 }
