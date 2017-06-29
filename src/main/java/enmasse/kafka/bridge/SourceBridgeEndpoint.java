@@ -198,40 +198,53 @@ public class SourceBridgeEndpoint implements BridgeEndpoint {
 	 * @param message		AMQP message received
 	 */
 	private void processMessage(ProtonReceiver receiver, ProtonDelivery delivery, Message message) {
-
-		// replace unsupported "/" (in a topic name in Kafka) with "."
-		String kafkaTopic = (receiver.getTarget().getAddress() != null) ?
-				receiver.getTarget().getAddress().replace('/', '.') :
-				null;
-
-		ProducerRecord<String, byte[]> record = this.converter.toKafkaRecord(kafkaTopic, message);
-		KafkaProducerRecord<String, byte[]> krecord = KafkaProducerRecord.create(record.topic(), record.key(), record.value(), record.timestamp(), record.partition());
-		LOG.debug("Sending to Kafka on topic {} at partition {} and key {}", record.topic(), record.partition(), record.key());
-				
-		if (delivery.remotelySettled()) {
-			
-			// message settled (by sender), no feedback need by Apache Kafka, no disposition to be sent
-			this.producerSettledMode.write(krecord);
-			
-		} else {
-			// message unsettled (by sender), feedback needed by Apache Kafka, disposition to be sent accordingly
-			this.producerUnsettledMode.write(krecord, (writeResult) -> {
-
-				if (writeResult.failed()) {
-
-					Throwable exception = writeResult.cause();
-					// record not delivered, send REJECTED disposition to the AMQP sender
-					LOG.error("Error on delivery to Kafka {}", exception.getMessage());
-					this.rejectedDelivery(receiver.getName(), delivery, exception);
+		UnprocessableMessagePolicy policy = UnprocessableMessagePolicy.DROP;
+		try {
+			// replace unsupported "/" (in a topic name in Kafka) with "."
+			String kafkaTopic = (receiver.getTarget().getAddress() != null) ?
+					receiver.getTarget().getAddress().replace('/', '.') :
+					null;
+			ProducerRecord<String, byte[]> record = this.converter.toKafkaRecord(kafkaTopic, message);
+			if (record == null) {
+				throw new NullPointerException(this.converter.getClass().getName()+".toAmqpMessage() returned null");
+			}
+	
+			KafkaProducerRecord<String, byte[]> krecord = KafkaProducerRecord.create(record.topic(), record.key(), record.value(), record.timestamp(), record.partition());
+			LOG.debug("Sending to Kafka on topic {} at partition {} and key {}", record.topic(), record.partition(), record.key());
 					
-				} else {
-
-					RecordMetadata metadata = writeResult.result();
-					// record delivered, send ACCEPTED disposition to the AMQP sender
-					LOG.debug("Delivered to Kafka on topic {} at partition {} [{}]", metadata.getTopic(), metadata.getPartition(), metadata.getOffset());
-					this.acceptedDelivery(receiver.getName(), delivery);
-				}
-			});
+			if (delivery.remotelySettled()) {
+				
+				// message settled (by sender), no feedback need by Apache Kafka, no disposition to be sent
+				this.producerSettledMode.write(krecord);
+				
+			} else {
+				// message unsettled (by sender), feedback needed by Apache Kafka, disposition to be sent accordingly
+				this.producerUnsettledMode.write(krecord, (writeResult) -> {
+	
+					if (writeResult.failed()) {
+	
+						Throwable exception = writeResult.cause();
+						// record not delivered, send REJECTED disposition to the AMQP sender
+						LOG.error("Error on delivery to Kafka {}", exception.getMessage());
+						this.rejectedDelivery(receiver.getName(), delivery, exception);
+						
+					} else {
+	
+						RecordMetadata metadata = writeResult.result();
+						// record delivered, send ACCEPTED disposition to the AMQP sender
+						LOG.debug("Delivered to Kafka on topic {} at partition {} [{}]", metadata.getTopic(), metadata.getPartition(), metadata.getOffset());
+						this.acceptedDelivery(receiver.getName(), delivery);
+					}
+				});
+			}
+		} catch (Exception e) {
+			LOG.error("Unprocessable message received from ", receiver.getRemoteSource().getAddress(), e);
+			switch (policy) {
+			case HALT:
+				close();
+				break;
+			case DROP:
+			}
 		}
 	}
 

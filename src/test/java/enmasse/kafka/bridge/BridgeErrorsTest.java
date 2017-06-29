@@ -21,6 +21,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
 
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.qpid.proton.amqp.Symbol;
 import org.apache.qpid.proton.amqp.messaging.Accepted;
 import org.apache.qpid.proton.amqp.messaging.Data;
@@ -39,10 +41,13 @@ import enmasse.kafka.bridge.config.KafkaConfigProperties;
 import enmasse.kafka.bridge.converter.MessageConverter;
 import io.debezium.kafka.KafkaCluster;
 import io.debezium.util.Testing;
+import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
 import io.vertx.ext.unit.Async;
 import io.vertx.ext.unit.TestContext;
 import io.vertx.ext.unit.junit.VertxUnitRunner;
+import io.vertx.kafka.client.producer.KafkaProducer;
+import io.vertx.kafka.client.producer.KafkaProducerRecord;
 import io.vertx.proton.ProtonClient;
 import io.vertx.proton.ProtonConnection;
 import io.vertx.proton.ProtonHelper;
@@ -125,7 +130,7 @@ public class BridgeErrorsTest {
 		stopKafka();
 	}
 	
-	protected void sendSimpleMessage(TestContext context, String topic) {
+	protected void sendSimpleAmqpMessage(TestContext context, String topic) {
 		ProtonClient client = ProtonClient.create(this.vertx);
 
 		Async async = context.async();
@@ -149,10 +154,118 @@ public class BridgeErrorsTest {
 		});
 	}
 	
+	protected void receiveSimpleAmqpMessage(TestContext context, String topic, Handler<String> handler) {
+		ProtonClient client = ProtonClient.create(this.vertx);
+		Async async = context.async();
+		client.connect(BridgeErrorsTest.BRIDGE_HOST, BridgeErrorsTest.BRIDGE_PORT, ar -> {
+			if (ar.succeeded()) {
+				
+				ProtonConnection connection = ar.result();
+				connection.open();
+				
+				ProtonReceiver receiver = connection.createReceiver(topic+"/group.id/my_group");
+				receiver.handler((delivery, message) -> {
+					
+					Section body = message.getBody();
+					if (body instanceof Data) {
+						byte[] value = ((Data)body).getValue().getArray();
+						LOG.info("Message received {}", new String(value));
+						// default is AT_LEAST_ONCE QoS (unsettled) so we need to send disposition (settle) to sender
+						delivery.disposition(Accepted.getInstance(), true);
+						handler.handle(new String(value));
+						async.complete();
+					}
+				})
+				.setPrefetch(1)
+				.open();
+			}
+		});
+	}
+	
+	protected void sendSimpleKafkaMessage(TestContext context, String topic) {
+		Map<String, String> config = new HashMap<>();
+		config.put("bootstrap.servers", "localhost:9092");
+		config.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+		config.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+		config.put("acks", "1");
+		KafkaProducer<String, String> producer = KafkaProducer.create(this.vertx, config);
+		KafkaProducerRecord<String, String> record = KafkaProducerRecord.create(topic, "Simple message");
+		producer.write(record);
+	}
+	
+	static class ConverterThrows<K, V> implements MessageConverter<K, V>{
+
+		@Override
+		public ProducerRecord<K, V> toKafkaRecord(String kafkaTopic, Message message) {
+			throw new RuntimeException();
+		}
+
+		@Override
+		public Message toAmqpMessage(String amqpAddress, ConsumerRecord<K, V> record) {
+			throw new RuntimeException();
+		}
+	}
+	
 	/** What happens when the configured converter class throws an exception? */
 	@Test
-	public void converterThrows(TestContext context) throws Exception {
-		context.fail("TODO");
+	public void converterToKafkaThrows(TestContext context) throws Exception {
+		kafkaCluster().startup();
+		BridgeConfigProperties object = new BridgeConfigProperties();
+		object.getAmqpConfigProperties().setMessageConverter(ConverterThrows.class.getName());
+		startBridge(context, object);
+		sendSimpleAmqpMessage(context, "my_topic");
+		Thread.currentThread().sleep(5000L);
+		stopBridge(context);
+	}
+	
+	/** What happens when the configured converter class throws an exception? */
+	@Test
+	public void converterToAmqpThrows(TestContext context) throws Exception {
+		String topic = "my_topic";
+		kafkaCluster().startup();
+		BridgeConfigProperties object = new BridgeConfigProperties();
+		object.getAmqpConfigProperties().setMessageConverter(ConverterThrows.class.getName());
+		startBridge(context, object);
+		sendSimpleKafkaMessage(context, topic);
+		receiveSimpleAmqpMessage(context, topic, (m)-> context.assertEquals("", m));
+	}
+	
+	
+	static class ConverterReturnsNull<K, V> implements MessageConverter<K, V>{
+
+		@Override
+		public ProducerRecord<K, V> toKafkaRecord(String kafkaTopic, Message message) {
+			return null;
+		}
+
+		@Override
+		public Message toAmqpMessage(String amqpAddress, ConsumerRecord<K, V> record) {
+			return null;
+		}
+	}
+	
+	
+	/** What happens when the configured converter class returns null ? */
+	@Test
+	public void converterToKafkaReturnsNull(TestContext context) throws Exception {
+		kafkaCluster().startup();
+		BridgeConfigProperties object = new BridgeConfigProperties();
+		object.getAmqpConfigProperties().setMessageConverter(ConverterReturnsNull.class.getName());
+		startBridge(context, object);
+		sendSimpleAmqpMessage(context, "my_topic");
+		//context.fail("TODO assert error");
+	}
+	
+	/** What happens when the configured converter class returns null ? */
+	@Test
+	public void converterToAmqpReturnsNull(TestContext context) throws Exception {
+		String topic = "my_topic";
+		kafkaCluster().startup();
+		BridgeConfigProperties object = new BridgeConfigProperties();
+		object.getAmqpConfigProperties().setMessageConverter(ConverterReturnsNull.class.getName());
+		startBridge(context, object);
+		sendSimpleKafkaMessage(context, topic);
+		receiveSimpleAmqpMessage(context, topic, (m)-> context.assertEquals("", m));
 	}
 	
 	/** What happens when the configured converter class is not a {@link MessageConverter} ? */
@@ -162,7 +275,7 @@ public class BridgeErrorsTest {
 		BridgeConfigProperties object = new BridgeConfigProperties();
 		object.getAmqpConfigProperties().setMessageConverter("java.lang.String");
 		startBridge(context, object);
-		sendSimpleMessage(context, "my_topic");
+		sendSimpleAmqpMessage(context, "my_topic");
 		context.fail("TODO assert error");
 	}
 

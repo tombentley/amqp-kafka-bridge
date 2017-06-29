@@ -293,37 +293,51 @@ public class SinkBridgeEndpoint<K, V> implements BridgeEndpoint {
 	 * @param record	Kafka consumer record
 	 */
 	private void sendAmqpMessage(ConsumerRecord<K, V> record) {
-		int partition = record.partition();
-		long offset = record.offset();
-		String deliveryTag = partition + "_" + offset;
-		Message message = this.converter.toAmqpMessage(this.sender.getSource().getAddress(), record);
-		if (this.sender.getQoS() == ProtonQoS.AT_MOST_ONCE) {
-			
-			// Sender QoS settled (AT_MOST_ONCE)
-			
-			this.sender.send(ProtonHelper.tag(deliveryTag), message);
-			
-		} else {
-			
-			// Sender QoS unsettled (AT_LEAST_ONCE)
-			
-			// record (converted in AMQP message) is on the way ... ask to tracker to track its delivery
-			this.offsetTracker.track(partition, offset, record);
-			
-			LOG.debug("Tracked {} - {} [{}]", record.topic(), record.partition(), record.offset());
-
-			this.sender.send(ProtonHelper.tag(deliveryTag), message, delivery -> {
+		UnprocessableMessagePolicy policy = UnprocessableMessagePolicy.DROP;
+		try {
+			int partition = record.partition();
+			long offset = record.offset();
+			String deliveryTag = partition + "_" + offset;
+			Message message = this.converter.toAmqpMessage(this.sender.getSource().getAddress(), record);
+			if (message == null) {
+				throw new NullPointerException(this.converter.getClass().getName()+".toAmqpMessage() returned null");
+			}
+			if (this.sender.getQoS() == ProtonQoS.AT_MOST_ONCE) {
 				
-				// a record (converted in AMQP message) is delivered ... communicate it to the tracker
-				String tag = new String(delivery.getTag());
-				this.offsetTracker.delivered(partition, offset);
+				// Sender QoS settled (AT_MOST_ONCE)
 				
-				LOG.debug("Message tag {} delivered {} to {}", tag, delivery.getRemoteState(), this.sender.getSource().getAddress());
-			});
+				this.sender.send(ProtonHelper.tag(deliveryTag), message);
+				
+			} else {
+				
+				// Sender QoS unsettled (AT_LEAST_ONCE)
+				
+				// record (converted in AMQP message) is on the way ... ask to tracker to track its delivery
+				this.offsetTracker.track(partition, offset, record);
+				
+				LOG.debug("Tracked {} - {} [{}]", record.topic(), record.partition(), record.offset());
+	
+				this.sender.send(ProtonHelper.tag(deliveryTag), message, delivery -> {
+					
+					// a record (converted in AMQP message) is delivered ... communicate it to the tracker
+					String tag = new String(delivery.getTag());
+					this.offsetTracker.delivered(partition, offset);
+					
+					LOG.debug("Message tag {} delivered {} to {}", tag, delivery.getRemoteState(), this.sender.getSource().getAddress());
+				});
+				
+			}
 			
+			flowCheck();
+		} catch (Exception e) {
+			LOG.error("Unprocessable message received from topic {}, partition {} offset {}", record.topic(), record.partition(), record.offset(), e);
+			switch (policy) {
+			case HALT:
+				close();
+				break;
+			case DROP:
+			}
 		}
-		
-		flowCheck();
 	}
 
 	/**
@@ -567,6 +581,8 @@ public class SinkBridgeEndpoint<K, V> implements BridgeEndpoint {
 
 				// 1. start message sending
 				sendAmqpMessage(record.record());
+				
+				// 
 
 				break;
 		}
