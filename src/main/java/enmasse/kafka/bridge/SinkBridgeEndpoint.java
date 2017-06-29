@@ -71,6 +71,9 @@ public class SinkBridgeEndpoint<K, V> implements BridgeEndpoint {
 	// used for tracking partitions and related offset for AT_LEAST_ONCE QoS delivery 
 	private OffsetTracker offsetTracker;
 	
+	// periodic timer for committing offsets
+	private long commitTimer;
+	
 	private Handler<BridgeEndpoint> closeHandler;
 	
 	// sender link for handling outgoing message
@@ -114,8 +117,16 @@ public class SinkBridgeEndpoint<K, V> implements BridgeEndpoint {
 	@Override
 	public void close() {
 		if (this.consumer != null) {
+			if (manageOffsetCommit()) {
+				// Stop receiving messages and cancel the commit timer
+				this.consumer.pause();
+				this.vertx.cancelTimer(this.commitTimer);
+				// do a final commit
+				commitOffsets(false);
+			}
 			this.consumer.close();
 		}
+		
 		if (this.offsetTracker != null)
 			this.offsetTracker.clear();
 		
@@ -217,12 +228,27 @@ public class SinkBridgeEndpoint<K, V> implements BridgeEndpoint {
 				flowCheck();
 				// Subscribe to the topic
 				subscribe();
+				
+				if (manageOffsetCommit()) {
+					this.commitTimer = this.vertx.setPeriodic(consumerConfig.getCommitInterval(),
+						(timerId)-> commitOffsets(false));
+				}
 			}
 		} catch (ErrorConditionException e) {
 			Bridge.detachWithError(link, e.toCondition());
 			this.handleClose();
 			return;
 		}
+	}
+	
+	/**
+	 * Whether we are responsible for committing offsets back to Kafka.
+	 * @return
+	 */
+	private boolean manageOffsetCommit() {
+		return this.qos == ProtonQoS.AT_LEAST_ONCE
+				&& !this.bridgeConfigProperties.getKafkaConfigProperties()
+				.getConsumerConfig().isEnableAutoCommit();
 	}
 
 	/**
@@ -460,11 +486,10 @@ public class SinkBridgeEndpoint<K, V> implements BridgeEndpoint {
 					}
 				}
 			
-				// Sender QoS unsettled (AT_LEAST_ONCE), need to commit offsets before partitions are revoked
-				
-				if (this.qos == ProtonQoS.AT_LEAST_ONCE) {
+				// need to commit offsets before partitions are revoked
+				if (manageOffsetCommit()) {
 					// commit all tracked offsets for partitions
-					SinkBridgeEndpoint.this.commitOffsets(true);
+					commitOffsets(true);
 				}
 			}
 		});
@@ -543,22 +568,9 @@ public class SinkBridgeEndpoint<K, V> implements BridgeEndpoint {
 				// 1. start message sending
 				sendAmqpMessage(record.record());
 
-				if (endOfBatch()) {
-					LOG.debug("End of batch in {} mode => commitOffsets()", this.qos);
-					try {
-						// 2. commit all tracked offsets for partitions
-						commitOffsets(false);
-					} catch (Exception e) {
-						LOG.error("Error committing ... {}", e.getMessage());
-					}
-				}
 				break;
 		}
 		this.recordIndex++;
-	}
-
-	private boolean endOfBatch() {
-		return this.recordIndex == this.batchSize-1;
 	}
 
 	private boolean startOfBatch() {

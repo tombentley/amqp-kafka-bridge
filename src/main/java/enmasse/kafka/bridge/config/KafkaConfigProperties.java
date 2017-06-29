@@ -28,8 +28,10 @@ import org.springframework.stereotype.Component;
 public class KafkaConfigProperties {
 
     private static final String DEFAULT_BOOTSTRAP_SERVERS = "localhost:9092";
-
+    private static final long DEFAULT_COMMIT_INTERVAL = 5000L;
+    
     private String bootstrapServers = DEFAULT_BOOTSTRAP_SERVERS;
+    private long commitInterval = DEFAULT_COMMIT_INTERVAL;
 
     private KafkaProducerConfigProperties producerConfig = new KafkaProducerConfigProperties();
     private KafkaConsumerConfigProperties consumerConfig = new KafkaConsumerConfigProperties();
@@ -95,4 +97,21 @@ public class KafkaConfigProperties {
         this.consumerConfig = consumerConfig;
         return this;
     }
+    
+
+    /**
+     * Get the commit interval, in milliseconds
+     * @return
+     */
+	public long getCommitInterval() {
+		return this.commitInterval;
+	}
+
+	/**
+	 * Set the commit interval, in milliseconds.
+	 * @param commitInterval
+	 */
+	public void setCommitInterval(long commitInterval) {
+		this.commitInterval = commitInterval;
+	}
 }

@@ -250,6 +250,8 @@ public class SinkBridgeEndpointMockTest {
 		batchHandler.invoke(endpoint, mockRecords);
 		handler.invoke(endpoint, recordProducer.mockRecord(null, ()->"Hello, world".getBytes()));
 
+		endpoint.close();
+		
 		ArgumentCaptor<Map<TopicPartition, OffsetAndMetadata>> commitMapCap = ArgumentCaptor.forClass(Map.class);
 		verify(consumerSpy).commit(commitMapCap.capture(), any(Handler.class));
 		
