@@ -84,8 +84,6 @@ public class SinkBridgeEndpoint<K, V> implements BridgeEndpoint {
 
 	private String topic;
 
-	private String kafkaTopic;
-
 	private Integer partition;
 
 	private Long offset;
@@ -175,9 +173,9 @@ public class SinkBridgeEndpoint<K, V> implements BridgeEndpoint {
 						});
 				
 				this.groupId = address.substring(groupIdIndex + SinkBridgeEndpoint.GROUP_ID_MATCH.length());
-				this.topic = address.substring(0, groupIdIndex);
+				String topic = address.substring(0, groupIdIndex);
 				
-				LOG.debug("topic {} group.id {}", this.topic, this.groupId);
+				LOG.debug("topic {} group.id {}", topic, this.groupId);
 				
 				// get filters on partition and offset
 				Source source = (Source) this.sender.getRemoteSource();
@@ -196,8 +194,8 @@ public class SinkBridgeEndpoint<K, V> implements BridgeEndpoint {
 				// creating configuration for Kafka consumer
 				
 				// replace unsupported "/" (in a topic name in Kafka) with "."
-				this.kafkaTopic = this.topic.replace('/', '.');
-				this.offsetTracker = new SimpleOffsetTracker(this.kafkaTopic);
+				this.topic = topic.replace('/', '.');
+				this.offsetTracker = new SimpleOffsetTracker(this.topic);
 				this.qos = this.sender.getQoS();
 				
 				// create context shared between sink endpoint and Kafka worker
@@ -383,10 +381,10 @@ public class SinkBridgeEndpoint<K, V> implements BridgeEndpoint {
 		if (this.partition != null) {
 			// read from a specified partition
 			LOG.debug("Assigning to partition {}", this.partition);
-			this.consumer.partitionsFor(this.kafkaTopic, this::partitionsForHandler);
+			this.consumer.partitionsFor(this.topic, this::partitionsForHandler);
 		} else {
 			LOG.info("No explicit partition for consuming from topic {} (will be automatically assigned)", 
-					this.kafkaTopic);
+					this.topic);
 			automaticPartitionAssignment();
 		}
 	}
@@ -399,35 +397,35 @@ public class SinkBridgeEndpoint<K, V> implements BridgeEndpoint {
 	void partitionsForHandler(AsyncResult<List<PartitionInfo>> partitionsResult) {
 		if (partitionsResult.failed()) {
 			sendAmqpError(Bridge.AMQP_ERROR_KAFKA_SUBSCRIBE,
-					"Error getting partition info for topic " + this.kafkaTopic, 
+					"Error getting partition info for topic " + this.topic, 
 					partitionsResult);
 			return;
 		}
-		LOG.debug("Getting partitions for {}", this.kafkaTopic);
+		LOG.debug("Getting partitions for {}", this.topic);
 		List<PartitionInfo> availablePartitions = partitionsResult.result();
 		Optional<PartitionInfo> requestedPartitionInfo = availablePartitions.stream().filter(p -> p.getPartition() == this.partition).findFirst();
 		
 		if (requestedPartitionInfo.isPresent()) {
 			LOG.debug("Requested partition {} present", this.partition);
-			this.consumer.assign(Collections.singleton(new TopicPartition(this.kafkaTopic, this.partition)), assignResult-> {
+			this.consumer.assign(Collections.singleton(new TopicPartition(this.topic, this.partition)), assignResult-> {
 				if (assignResult.failed()) {
 					sendAmqpError(Bridge.AMQP_ERROR_KAFKA_SUBSCRIBE,
-							"Error assigning to topic %s" + this.kafkaTopic, 
+							"Error assigning to topic %s" + this.topic, 
 							assignResult);
 					return;
 				}
-				LOG.debug("Assigned to {} partition {}", this.kafkaTopic, this.partition);
+				LOG.debug("Assigned to {} partition {}", this.topic, this.partition);
 				// start reading from specified offset inside partition
 				if (this.offset != null) {
 					
 					LOG.debug("Seeking to offset {}", this.offset);
 					
-					this.consumer.seek(new TopicPartition(this.kafkaTopic, this.partition), this.offset, seekResult ->{
+					this.consumer.seek(new TopicPartition(this.topic, this.partition), this.offset, seekResult ->{
 						if (seekResult.failed()) {
 							sendAmqpError(Bridge.AMQP_ERROR_KAFKA_SUBSCRIBE,
 									format("Error seeking to offset %s for topic %s, partition %s",
 											this.offset, 
-											this.kafkaTopic,
+											this.topic,
 											this.partition),
 											seekResult);
 							return;
@@ -485,10 +483,10 @@ public class SinkBridgeEndpoint<K, V> implements BridgeEndpoint {
 			}
 		});
 		
-		this.consumer.subscribe(this.kafkaTopic, subscribeResult-> {
+		this.consumer.subscribe(this.topic, subscribeResult-> {
 			if (subscribeResult.failed()) {
 				sendAmqpError(Bridge.AMQP_ERROR_KAFKA_SUBSCRIBE,
-						"Error subscribing to topic " + this.kafkaTopic,
+						"Error subscribing to topic " + this.topic,
 						subscribeResult);
 				return;
 			}
