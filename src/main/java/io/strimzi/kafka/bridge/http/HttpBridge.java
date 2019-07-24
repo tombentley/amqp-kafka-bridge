@@ -13,6 +13,7 @@ import io.strimzi.kafka.bridge.SourceBridgeEndpoint;
 import io.strimzi.kafka.bridge.http.model.HttpBridgeError;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Future;
+import io.vertx.core.Handler;
 import io.vertx.core.http.HttpConnection;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerOptions;
@@ -79,13 +80,75 @@ public class HttpBridge extends AbstractVerticle {
                 });
     }
 
+    enum LogLevel {
+        INFO, DEBUG, TRACE
+    }
+
+
+
+    abstract class Operation implements Handler<RoutingContext> {
+
+        private final LogLevel logLevel;
+        private final String operationName;
+
+        public Operation(String operationName, LogLevel logLevel) {
+            this.operationName = operationName;
+            this.logLevel= logLevel;
+        }
+        public final void handle(RoutingContext context) {
+            httpBridgeContext.setOpenApiOperation(HttpOpenApiOperations.SEND);
+            logRequest(context);
+            process(context);
+        }
+        protected String logRequestMessage(RoutingContext routingContext) {
+            int requestId = System.identityHashCode(routingContext.request());
+            StringBuilder sb = new StringBuilder();
+            if (log.isInfoEnabled()) {
+                sb.append("[").append(requestId).append("] ").append(operationName)
+                        .append(" request from ")
+                        .append(routingContext.request().remoteAddress());
+                if (log.isDebugEnabled()) {
+                    sb.append(" method = ").append(routingContext.request().method())
+                            .append(", path = ").append(routingContext.request().path());
+                    if (log.isTraceEnabled()) {
+                        sb.append(" headers = ").append(routingContext.request().headers());
+                    }
+                }
+            }
+            return sb.toString();
+        }
+        protected void logRequest(RoutingContext routingContext) {
+            int requestId = System.identityHashCode(routingContext.request());
+            routingContext.put("request-id", requestId);
+            String msg = logRequestMessage(routingContext);
+            switch (logLevel) {
+            case INFO:
+                log.info(msg);
+            case DEBUG:
+                log.debug(msg);
+            case TRACE:
+                log.trace(msg);
+            }
+        }
+        abstract void process(RoutingContext context);
+    }
+
+    Operation SEND = new Operation("send", LogLevel.INFO) {
+        @Override
+        public void process(RoutingContext event) {
+            send(event);
+        }
+    };
+    // other Operation instances, for each operation
+
+
     @Override
     public void start(Future<Void> startFuture) throws Exception {
 
         OpenAPI3RouterFactory.create(vertx, "openapi.json", ar -> {
             if (ar.succeeded()) {
                 OpenAPI3RouterFactory routerFactory = ar.result();
-                routerFactory.addHandlerByOperationId(HttpOpenApiOperations.SEND.toString(), this::send);
+                routerFactory.addHandlerByOperationId(SEND.operationName, SEND);
                 routerFactory.addHandlerByOperationId(HttpOpenApiOperations.SEND_TO_PARTITION.toString(), this::sendToPartition);
                 routerFactory.addHandlerByOperationId(HttpOpenApiOperations.CREATE_CONSUMER.toString(), this::createConsumer);
                 routerFactory.addHandlerByOperationId(HttpOpenApiOperations.DELETE_CONSUMER.toString(), this::deleteConsumer);
@@ -168,7 +231,6 @@ public class HttpBridge extends AbstractVerticle {
     }
 
     private void send(RoutingContext routingContext) {
-        this.httpBridgeContext.setOpenApiOperation(HttpOpenApiOperations.SEND);
         this.processProducer(routingContext);
     }
 
